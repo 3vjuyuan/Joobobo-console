@@ -1,0 +1,25 @@
+{
+  "name": "joobobo/console",
+  "description": "Joobobo console tool",
+  "license": "GNU",
+  "authors": [
+    {
+      "name": "Team Delta - San Wei Ju Yuan Tech. Ltd.",
+      "email": "delta@3vjuyuan.com"
+    }
+  ],
+  "require": {
+    "php": "^7.0",
+    "symfony/console": "^3.0",
+    "symfony/process": "^3.0",
+    "symfony/yaml": "^3.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "Joobobo\\Console\\": "src"
+    }
+  },
+  "bin": [
+    "joocon"
+  ]
+}
