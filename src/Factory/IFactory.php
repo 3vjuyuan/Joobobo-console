@@ -12,4 +12,6 @@ namespace Joobobo\Console\Factory;
 interface IFactory
 {
     public function createCommands();
+    public function destroyCommands();
+    public function initializeCommands();
 }
