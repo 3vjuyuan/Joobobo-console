@@ -10,6 +10,7 @@ use Joobobo\Console\Factory\IFactory;
 
 class JooboboConsoleApplication extends Application
 {
+    const ROOT = __DIR__.'/../../';
     /**
      * @var IFactory
      */
@@ -46,6 +47,8 @@ class JooboboConsoleApplication extends Application
         }
 
         $this->addCommands($this->factory->createCommands());
+        $this->addCommands($this->factory->destroyCommands());
+        $this->addCommands($this->factory->initializeCommands());
         $this->input = $input;
         return parent::run($input, isset($output) ? $output : $this->getOutput($output));
     }
@@ -53,7 +56,7 @@ class JooboboConsoleApplication extends Application
     /**
      * @return ConsoleOutput|OutputInterface
      */
-    public function getOutput() {
+    public function getOutput() { 
         if(!isset($this->output)) {
             $this->output = new ConsoleOutput();
             $this->output->getFormatter()->setStyle('b', new OutputFormatterStyle(null, null, array('bold')));
