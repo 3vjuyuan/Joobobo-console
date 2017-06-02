@@ -14,110 +14,264 @@ use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Exception\RuntimeException;
 use Symfony\Component\Yaml\Yaml;
+
 class InitializeCommand extends SiteAbstractCommand
 {
   const COMMAND_NAME = 'initialize';
-  const CONFIG_PATH = './src/Config/';
+
 
   protected function configure()
   {
     //@todo help and description should be saved in language file
     $this->setName(self::COMMAND_NAME)
       ->setDescription('Set the server configuration file')
-      ->addOption('release', 'r', InputOption::VALUE_REQUIRED, 'Give the release version of Joomla!')
-      //Apache/Nginx
-      ->addArgument('ServerType', InputArgument::REQUIRED, 'The server type of the project configuration file.')
-      ->addArgument('ProjectName', InputArgument::REQUIRED, 'The name of the project.')
-      ->addArgument('ServerName', InputArgument::REQUIRED, 'The server name of the project.')
-      ->addArgument('Port', InputArgument::OPTIONAL, 'The port of the project.');
+      ->addOption('config', 'c', InputOption::VALUE_REQUIRED, 'The yml config file of the initialize project. ')
+      ->addOption('project', 'p', InputOption::VALUE_REQUIRED, 'The project directory');
+
   }
+
   protected function execute(InputInterface $input, OutputInterface $output)
   {
-    $server_type = $input->getArgument('ServerType');
-    $server_name = $input->getArgument('ServerName');
-    $port = $input->getArgument('Port')? $input->getArgument('Port'): 80;
-    $project_name = $input->getArgument('ProjectName');
-    $config_path = self::CONFIG_PATH.$project_name.'.yaml';
-    //项目配置文件是否存在
-    if(!file_exists($config_path)){
-      $output->writeln('<error>Failed to get the project configuration file.</error>');
-      return false;
+    // Parse options
+    $options = $this->parseOptions($input);
+
+    $errors = $this->validateOptions($options);
+
+    if (!empty($errors)) {
+      foreach ($errors as $error) {
+        $output->writeln('<error>' . $error . '</error>');
+      }
+      exit(1);
     }
-    //从项目配置文件获取项目所在目录
-    $data = Yaml::parse(file_get_contents($config_path));
-    if(empty($data)){
-      $output->writeln('<error>The configuration file is empty.</error>');
-      return false;
+
+    // Attempt to initialise the database.
+    $db = new \InstallationModelDatabase;
+
+    if (!$db->createDatabase($options)) {
+      $output->writeln("<error>Error executing createDatabase</error>");
+      exit(1);
     }
-    //只允许有一种服务器配置类型
-    if(isset($data['server_type'])){
-      $output->writeln('<warning>The project server configuration type already exists.</warning>');
-      return false;
+
+    /*
+       FIXME InstallationModelDatabase relies on session manipulation which doesn't work well in cli
+       $session = JFactory::getSession();
+       $options = $session->get('setup.options', NULL);
+    */
+    $options['db_created'] = 1;
+    $options['db_select'] = 1;
+
+    if ($options['db_old'] == 'backup') {
+      if (!$db->handleOldDatabase($options)) {
+        $output->writeln("<error>Error executing handleOldDatabase</error>");
+        exit(1);
+      }
     }
-    if(!isset($data['project_path'])){
-      $output->writeln('<error>The project directory does not exist in the configuration file.</error>');
-      return false;
+    @\JApplicationWeb::getInstance('InstallationApplicationWeb');
+    if (!$db->createTables($options)) {
+      $output->writeln("<error>Error executing createTables</error>");
+      exit(1);
     }
-    $document_root = $data['project_path'];
-    if(!is_dir($document_root)){
-      $output->writeln('<error>The current project directory does not exist.</error>');
-      return false;
+
+    // Attempt to setup the configuration.
+
+    $configuration = new \InstallationModelConfiguration;
+
+    if (!$configuration->setup($options)) {
+      $output->writeln("<error>Error executing setup</error>");
+      exit(1);
     }
-    $config_filename = $document_root.'/'.$project_name.'.conf';
-    //判断服务器配置文件
-    if(file_exists($config_filename)){
-      $output->writeln('<warning>The server configuration file already exists.</warning>');
-      return false;
+
+    // Attempt to create the database tables.
+    if ($options['sample_file']) {
+      if (!$db->installSampleData($options)) {
+        $output->writeln("<error>Error executing installSampleData</error>");
+        exit(1);
+      }
     }
-    $config = '';
-    if(strtolower($server_type) == 'apache'){
-      $config .= '<VirtualHost *:'.$port.'>
-      ServerName  '.$server_name.'
-      ServerAdmin  webmaster@localhost
-      DocumentRoot '.$document_root.'
-      ErrorLog ${APACHE_LOG_DIR}/error.log
-      CustomLog ${APACHE_LOG_DIR}/access.log combined
-      <Directory '.$document_root.'>
-          AllowOverride All
-          Order allow,deny
-          Allow from All
-      </Directory>
-    </VirtualHost>';
-    }elseif (strtolower($server_type) == 'nginx'){
-      $config .='server {
-        listen  '.$port.';
-        server_name  '.$server_name.';
-        location / {
-          root  '.$document_root.';
-          index  index.php index.html index.htm;
-        }
-        error_page 500 502 503 504 /50x.html;
-        location = /50x.html {
-          root /usr/share/nginx/html;
-        }
-        location ~ \.php$ {
-          fastcgi_pass  127.0.0.1:9000;
-          fastcgi_index index.php;
-          fastcgi_param SCRIPT_FILENAME '.$document_root.'$fastcgi_script_name;
-          include       fastcgi_params;
-        }
-      }';
+    exec('rm -rf ' . $input->getOption('project') . '/installation', $out, $return);
+    if ($return !== 0) {
+      $output->writeln('<warning>Installation folder could not be deleted. Please manually delete the folder.' . "\n" . 'install path: ' . $input->getOption('project') . '/installation. </warning>');
     }
-    //生成服务器配置文件
-    if(!file_put_contents($config_filename,$config)){
-      $output->writeln('<error>The server configuration file generation failed.</error>');
-      return false;
+
+    if (!file_exists($input->getOption('project') . '/configuration.php')) {
+      $output->writeln("<error>Installation configuration failed.</error>");
+      exit(1);
     }
-    $data['server_type'] = $server_type;
-    $data['server_name'] = $server_name;
-    //将项目域名写入相应配置文件
-    if(!file_put_contents($config_path,Yaml::dump($data))){
-      //删除已创建apache配置文件
-      rmdir($config_filename);
-      $output->writeln('<error>The project server name writing failed.</error>');
-      return false;
-    }
-    $output->writeln('<success>Successfully created the server configuration file,please create a soft connection to '.$config_filename.'.</success>');
+
+    $output->writeln('<success>Successfully initialize.</success>');
     return true;
   }
+
+  protected function validateOptions($options)
+  {
+    $optionsMetadata = $this->getOptionsMetadata();
+    $errors = array();
+
+    foreach ($optionsMetadata as $key => $spec) {
+      if (!isset($options[$key]) && isset($spec['required']) && $spec['required']) {
+        $errors[] = "Yml file missing required option: $key, description: {$spec['description']}";
+      }
+    }
+
+    return $errors;
+  }
+  
+  protected function initialize(InputInterface $input, OutputInterface $output)
+  {
+
+    parent::initialize($input, $output);
+    $options = $input->getOptions();
+
+    if (empty($options['project']) || empty($options['config'])) {
+      $output->writeln('<error>The project and config option required.</error>');
+      exit(1);
+    }
+    $project = $this->getDirectory($options['project']);
+
+    if (!is_dir($project) || !file_exists($options['config'])) {
+      $output->writeln('<error>The project directory or config file nonexistent.</error>');
+      exit(1);
+    }
+
+    define("_JEXEC", 1);
+    // Bootstrap the application
+    if (!file_exists($project . '/installation/application/bootstrap.php')) {
+      $output->writeln("<error>Installation application has been removed.\n</error>");
+      exit(1);
+    }
+    require_once $project . '/installation/application/bootstrap.php';
+    require_once $project . '/installation/model/database.php';
+    require_once $project . '/installation/model/configuration.php';
+    chdir($project . '/installation');
+
+    require_once JPATH_LIBRARIES . '/import.legacy.php';
+    require_once JPATH_LIBRARIES . '/cms.php';
+
+    $input->setOption('project', $project);
+  }
+  
+  protected function parseOptions(InputInterface $input)
+  {
+
+    $optionsMetadata = $this->getOptionsMetadata();
+    $options = array();
+    $config = Yaml::parse(file_get_contents($input->getOption('config')))['options'];
+
+    foreach ($optionsMetadata as $key => $spec) {
+      if (isset($config[$key])) {
+        $options[$key] = (isset($spec['type']) && $spec['type'] == 'bool') ? (bool)$config[$key] : $config[$key];
+      } elseif (isset($spec['factory'])) {
+        $options[$key] = call_user_func($spec['factory']);
+      } elseif (isset($spec['default'])) {
+        $options[$key] = $spec['default'];
+      }
+    }
+
+    return $options;
+  }
+
+  protected function getOptionsMetadata()
+  {
+    $optionsMetadata = array(
+      'admin_email' => array(
+        'description' => 'Admin user\'s email',
+        'required' => true,
+      ),
+      'admin_password' => array(
+        'description' => 'Admin user\'s password',
+        'required' => true,
+      ),
+      'admin_user' => array(
+        'description' => 'Admin user\'s username',
+        'default' => 'admin',
+      ),
+      'db_host' => array(
+        'description' => 'Hostname (or hostname:port)',
+        'default' => '127.0.0.1:3306',
+      ),
+      'db_name' => array(
+        'description' => 'Database name',
+        'required' => true,
+      ),
+      'db_old' => array(
+        'description' => 'Policy to use with old DB [remove,backup]]',
+        'default' => 'backup',
+      ),
+      'db_pass' => array(
+        'description' => 'Database password',
+        'required' => true,
+      ),
+      'db_prefix' => array(
+        'description' => 'Table prefix',
+        'factory' => function () {
+          // FIXME: Duplicated from installation/model/fields/prefix.php
+          $size = 5;
+          $prefix = '';
+          $chars = range('a', 'z');
+          $numbers = range(0, 9);
+
+          // We want the fist character to be a random letter:
+          shuffle($chars);
+          $prefix .= $chars[0];
+
+          // Next we combine the numbers and characters to get the other characters:
+          $symbols = array_merge($numbers, $chars);
+          shuffle($symbols);
+
+          for ($i = 0, $j = $size - 1; $i < $j; ++$i) {
+            $prefix .= $symbols[$i];
+          }
+
+          // Add in the underscore:
+          $prefix .= '_';
+
+          return $prefix;
+        },
+      ),
+      'db_type' => array(
+        'description' => 'Database type [mysql,mysqli,pdomysql,postgresql,sqlsrv,sqlazure]',
+        'default' => 'mysqli',
+      ),
+      'db_user' => array(
+        'description' => 'Database user',
+        'required' => true,
+      ),
+      'helpurl' => array(
+        'description' => 'Help URL',
+        'default' => 'http://help.joomla.org/proxy/index.php?option=com_help&amp;keyref=Help{major}{minor}:{keyref}',
+      ),
+      'language' => array(
+        'description' => 'Language',
+        'default' => 'en-GB',
+      ),
+      'site_metadesc' => array(
+        'description' => 'Site description',
+        'default' => ''
+      ),
+      'site_name' => array(
+        'description' => 'Site name',
+        'default' => 'Joomla'
+      ),
+      'site_offline' => array(
+        'description' => 'Set site as offline',
+        'default' => 0,
+        'type' => 'bool',
+      ),
+      'sample_file' => array(
+        'description' => 'Sample SQL file (sample_blog.sql,sample_brochure.sql,...)',
+        'default' => '',
+      ),
+      'summary_email' => array(
+        'description' => 'Send email notification',
+        'default' => 0,
+        'type' => 'bool',
+      ),
+    );
+
+    // Installer internally has an option "admin_password2", but it
+    // doesn't seem to be necessary.
+
+    return $optionsMetadata;
+  }
+
 }
