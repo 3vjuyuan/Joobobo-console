@@ -10,6 +10,7 @@
   ],
   "require": {
     "php": "^7.0",
+    "league/plates": "3.*",
     "symfony/console": "^3.0",
     "symfony/process": "^3.0",
     "symfony/yaml": "^3.0"

@@ -14,91 +14,90 @@ use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Input\InputArgument;
 use Symfony\Component\Console\Exception\RuntimeException;
-use Symfony\Component\Yaml\Yaml;
+use League\Plates\Engine;
 
 class CreateCommand extends SiteAbstractCommand
 {
   const COMMAND_NAME = 'create';
-  const CONFIG_PATH = './src/Config/';
-  const DEFAULT_PACKAGE = './src/Package/Joomla_3.7.1.zip';
-
+  
+  private $server = array(
+    'apache' => ['conf' => '/etc/apache2/sites-enabled/', 'restart' => '/etc/init.d/apache2 restart'],
+    'nginx' => ['conf' => '/etc/nginx/conf/', 'restart' => '/etc/init.d/nginx restart']
+  );
+  
   protected function configure()
   {
     //@todo help and description should be saved in language file
     $this->setName(self::COMMAND_NAME)
       ->setDescription('Create a new Joobobo site')
       ->addOption('release', 'r', InputOption::VALUE_REQUIRED, 'Give the release version of Joomla!')
-      ->addArgument('project_name', InputArgument::REQUIRED, 'The name of the project.')
-      ->addArgument('directory', InputArgument::REQUIRED, 'The directory of the project.');
+      ->addOption('target', 't', InputOption::VALUE_REQUIRED, 'The directory of the project.')
+      ->addOption('server', 's', InputOption::VALUE_REQUIRED, 'The server type of the project configuration file.', 'apache')
+      ->addOption('git', 'g', InputOption::VALUE_OPTIONAL, 'Joomla git source', 'https://git.intern.3vjuyuan.com/wenmengyu/joomla-cms.git');
   }
-
+  
   protected function execute(InputInterface $input, OutputInterface $output)
   {
-    $project_name = $input->getArgument('project_name');
-    $dir = $input->getArgument('directory');
-    $config_path = self::CONFIG_PATH . $project_name . '.yaml';
+    $options = $input->getOptions();
+    $temp = realpath(JooboboConsoleApplication::TEMPLATES) . '/Config';
 
-    if (!is_dir(self::CONFIG_PATH) && !@mkdir(iconv("UTF-8", "GBK", self::CONFIG_PATH), 0750, true)) {
-      $output->writeln('<error>The Config directory creation failed.</error>');
+    if (!@mkdir(iconv("UTF-8", "GBK", $options['target']), 0750, true)) {
+      $output->writeln('<error>The target directory creation failed.</error>');
       return false;
     }
-    //确保目录带根目录
-    if (!in_array(substr($dir, 0, 1), ['/', '.'])) {
-      $dir = realpath(JooboboConsoleApplication::ROOT) . '/' . $dir;
+    
+    exec('git clone ' . $options['release'] . ' ' . $options['git'] . ' ' . $options['target'], $out, $return);
+    if ($return !== 0) {
+      $output->writeln('<error>The git clone joomla-cms failed.</error>');
+      exit(1);
     }
-    $rule = substr($dir, 0, 2);
-    if ($rule === './') {
-      $dir = realpath(JooboboConsoleApplication::ROOT) . '/' . str_replace($rule, '', $dir);
-    }
+    
+    $temp = new Engine($temp, 'conf');
+    $config = $temp->render($options['server'], ['directory' => $options['target']]);
 
-    if ($rule === '..') {
-      preg_match('|^[../]*|', $dir, $match);
-      $dir = realpath(JooboboConsoleApplication::ROOT . $match[0]) . '/' . str_replace($match[0], '', $dir);
-    }
-
-    //判断配置文件是否存在
-    if (file_exists($config_path)) {
-      $output->writeln('<warning>The project name already exists. Please anew it</warning>');
-      return true;
-    }
-    if (is_dir($dir)) {
-      //若目录已存在，不允许在此目录下创建项目
-      $output->writeln('<warning>The directory already exists.</warning>');
+    if (!file_put_contents($options['target'] . '/' . $options['server'] . '.conf', $config)) {
+      $output->writeln('<warning>The project server config writing failed. Need to manually create server config</warning>');
       return true;
     }
 
-    if (!@mkdir(iconv("UTF-8", "GBK", $dir), 0750, true)) {
-      $output->writeln('<error>The directory creation failed.</error>');
-      return false;
+    exec('ln -s ' . $options['target'] . '/' . $options['server'] . '.conf ' . $this->server[$options['server']]['conf'] . str_replace('/', '-', trim($options['target'], '/')) . '.conf', $out, $return);
+    if ($return !== 0) {
+      $output->writeln('<warning>Need to manually create ' . $options['server'] . ' link. Restart ' . $options['server'] . ' </warning>');
+    } else {
+      exec($this->server[$options['server']]['restart'], $out, $return);
+      if ($return !== 0) {
+        $output->writeln('<warning>Need restart ' . $options['server'] . ' </warning>');
+      }
     }
-    $data = array();
-    $data['project_path'] = $dir;
-    //将项目名称和所在目录写入相应配置文件
-    if (!file_put_contents($config_path, Yaml::dump($data))) {
-      //删除已创建目录
-      rmdir($dir);
-      $output->writeln('<error>The configuration file generation failed.</error>');
-      return false;
-    }
-    //解压安装包
-    exec('unzip ' . self::DEFAULT_PACKAGE . ' -d  ' . $dir, $out, $return_val);
-    if ($return_val) {
-      //删除已创建目录和生成的配置文件
-      unlink($config_path);
-      rmdir($dir);
-      $output->writeln('<error>The project installation package decompresses failed.</error>');
-      return false;
-    }
-    //复制install.php文件到项目的安装包目录
-    exec('cp ' . realpath(JooboboConsoleApplication::ROOT) . '/joobobo/install.php  ' . $dir . '/installation', $res, $return);
-    if ($return) {
-      //删除已创建目录和生成的配置文件
-      unlink($config_path);
-      rmdir($dir);
-      $output->writeln('<error>Failed to copy the installation file.</error>');
-      return false;
-    }
-    $output->writeln('<success>Successfully created the project,please install the project by ' . $dir . '/installation/install.php.</success>');
+    $output->writeln('<success>The project create successfully. Project path ' . $options['target'] . '</success>');
     return true;
+    
   }
+  
+  protected function initialize(InputInterface $input, OutputInterface $output)
+  {
+    parent::initialize($input, $output);
+    $options = $input->getOptions();
+    $temp = realpath(JooboboConsoleApplication::TEMPLATES) . '/Config';
+
+    if (empty($options['target'])) {
+      $output->writeln('<error>The target option required.</error>');
+      exit(1);
+    }
+    $dir = $this->getDirectory($options['target']);
+    if (is_dir($dir)) {
+      $output->writeln('<error>The target directory already exists.</error>');
+      exit(1);
+    }
+    
+    if (!isset($this->server[$options['server']]) || !file_exists($temp . '/' . strtolower($options['server']) . '.conf')) {
+      $output->writeln('<error>The server type config file does not exist.</error>');
+      exit(1);
+    }
+    $input->setOption('target', $dir);
+    $input->setOption('server', strtolower($options['server']));
+    $input->setOption('release', (empty($options['release']) ? '' : '--branch ' . $options['release']));
+
+  }
+  
 }
