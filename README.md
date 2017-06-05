@@ -96,6 +96,7 @@ In order to provide write access to certain directories for both, you will need 
 _ _ _
 
 To get an overview of all available commands, enter ./joocon.php site:initialize -h:
+
 `./joocon.php site:create -h`
 
 ```
