@@ -97,7 +97,7 @@ _ _ _
 
 To get an overview of all available commands, enter ./joocon.php site:initialize -h:
 
-`./joocon.php site:create -h`
+`./joocon.php site:initialize -h`
 
 ```
 Usage:
